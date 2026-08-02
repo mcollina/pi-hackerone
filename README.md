@@ -2,10 +2,18 @@
 
 A pi package that adds a HackerOne report fetcher powered by [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone).
 
-## Setup
+## Install
+
+Install from npm as a pi package:
 
 ```sh
-npm install
+pi install npm:pi-hackerone
+```
+
+Or try it without installing:
+
+```sh
+pi -e npm:pi-hackerone
 ```
 
 Configure credentials in pi settings. Global settings live at `~/.pi/agent/settings.json`; project settings live at `.pi/settings.json` and override global settings.
@@ -26,20 +34,6 @@ Configure credentials in pi settings. Global settings live at `~/.pi/agent/setti
 export HACKERONE_API_IDENTIFIER="your_api_identifier"
 export HACKERONE_API_TOKEN="your_api_token"
 export HACKERONE_API_BASE_URL="https://api.hackerone.com/v1"
-```
-
-## Use locally
-
-From this repository:
-
-```sh
-pi -e ./extensions/hackerone.ts
-```
-
-Or install as a local pi package:
-
-```sh
-pi install .
 ```
 
 ## What it adds
