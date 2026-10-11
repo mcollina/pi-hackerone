@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	HackerOneClient,
+	createComment,
 	filterComments,
 	getReport,
 	isAppError,
@@ -14,6 +15,7 @@ import {
 import { Type } from "typebox";
 
 const TOOL_NAME = "hackerone_report";
+const COMMENT_TOOL_NAME = "hackerone_comment";
 
 const reportParameters = Type.Object({
 	reportId: Type.Integer({
@@ -35,7 +37,32 @@ interface FetchReportOptions {
 	program?: string;
 }
 
-type ReportToolParams = FetchReportOptions;
+const commentParameters = Type.Object({
+	reportId: Type.Integer({
+		minimum: 1,
+		description: "HackerOne report number/id to comment on.",
+	}),
+	message: Type.String({
+		minLength: 1,
+		description: "The comment message to post.",
+	}),
+	internal: Type.Optional(Type.Boolean({
+		default: false,
+		description: "Post as an internal (team-only) comment instead of a public one.",
+	})),
+	attachmentIds: Type.Optional(Type.Array(Type.Integer({
+		minimum: 1,
+	}), {
+		description: "Optional attachment IDs to attach to the comment.",
+	})),
+});
+
+interface CommentToolParams {
+	reportId: number;
+	message: string;
+	internal?: boolean;
+	attachmentIds?: number[];
+}
 
 interface FetchReportResult {
 	report: Report;
@@ -115,9 +142,9 @@ function normalizeReportId(value: unknown): number | undefined {
 	return undefined;
 }
 
-function normalizeToolArguments(args: unknown): ReportToolParams {
+function normalizeToolArguments<T extends object>(args: unknown): T {
 	if (!args || typeof args !== "object") {
-		return args as ReportToolParams;
+		return args as T;
 	}
 
 	const record = args as Record<string, unknown>;
@@ -127,10 +154,10 @@ function normalizeToolArguments(args: unknown): ReportToolParams {
 		?? normalizeReportId(record.id);
 
 	if (reportId === undefined || record.reportId === reportId) {
-		return args as ReportToolParams;
+		return args as T;
 	}
 
-	return { ...record, reportId } as ReportToolParams;
+	return { ...record, reportId } as T;
 }
 
 function getProgramHandle(report: Report, fallback?: string): string | undefined {
@@ -161,9 +188,34 @@ async function fetchReport(options: FetchReportOptions, cwd: string): Promise<Fe
 	return { report, comments, programHandle, warnings };
 }
 
+async function postComment(options: CommentToolParams, cwd: string): Promise<Activity> {
+	const client = createClient(cwd);
+	return createComment(client, options.reportId, {
+		message: options.message,
+		internal: options.internal ?? false,
+		attachmentIds: options.attachmentIds,
+	});
+}
+
 function formatActor(activity: Activity): string {
 	const actor = activity.relationships?.actor?.data;
 	return actor?.attributes?.username ?? actor?.attributes?.handle ?? actor?.id ?? "unknown";
+}
+
+function formatCommentMarkdown(comment: Activity, reportId: number): string {
+	const actor = comment.relationships?.actor?.data;
+	const actorName = actor?.attributes?.username ?? actor?.attributes?.handle ?? actor?.id ?? "unknown";
+	const visibility = comment.attributes.internal ? "internal" : "public";
+	const lines = [
+		`# Comment posted on report #${reportId}`,
+		"",
+		`- Visibility: ${visibility}`,
+		`- Author: ${actorName}`,
+		`- Created: ${comment.attributes.created_at}`,
+		"",
+		comment.attributes.message ?? "_(empty comment)_",
+	];
+	return lines.join("\n");
 }
 
 function formatReportMarkdown(result: FetchReportResult): string {
@@ -268,6 +320,35 @@ export default function hackerOneExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: COMMENT_TOOL_NAME,
+		label: "HackerOne Comment",
+		description: "Post a public or internal comment on a HackerOne report using the HackerOne API.",
+		promptSnippet: "Post a comment on a HackerOne report by report number/id",
+		promptGuidelines: [
+			"Use hackerone_comment when the user wants to add a comment to a HackerOne report.",
+			"Before using hackerone_comment, ensure the user provided the report number/id and the comment message.",
+			"Set internal to true when the comment should only be visible to the program's team.",
+		],
+		parameters: commentParameters,
+		prepareArguments: normalizeToolArguments,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				const result = { comment: await postComment(params, ctx.cwd), reportId: params.reportId };
+				return {
+					content: [{ type: "text", text: formatCommentMarkdown(result.comment, result.reportId) }],
+					details: result,
+				};
+			} catch (error) {
+				return {
+					content: [{ type: "text", text: formatError(error) }],
+					isError: true,
+					details: undefined,
+				};
+			}
+		},
+	});
+
 	pi.registerCommand("hackerone-report", {
 		description: "Fetch a HackerOne report: /hackerone-report <number> [--comments] [--program handle]",
 		handler: async (args, ctx) => {
@@ -291,6 +372,126 @@ export default function hackerOneExtension(pi: ExtensionAPI) {
 			}
 		},
 	});
+
+	pi.registerCommand("hackerone-comment", {
+		description: "Post a comment on a HackerOne report: /hackerone-comment <number> --message \"text\" [--internal] [--attachment-id id]",
+		handler: async (args, ctx) => {
+			const parsed = parseCommentArgs(args);
+			if (!parsed) {
+				ctx.ui.notify(
+					"Usage: /hackerone-comment <number> --message \"text\" [--internal] [--attachment-id id]",
+					"warning",
+				);
+				return;
+			}
+
+			try {
+				ctx.ui.notify(`Posting comment on HackerOne report #${parsed.reportId}...`, "info");
+				const comment = await postComment(parsed, ctx.cwd);
+				pi.sendMessage({
+					customType: "hackerone-comment",
+					content: formatCommentMarkdown(comment, parsed.reportId),
+					display: true,
+					details: { comment, reportId: parsed.reportId },
+				});
+			} catch (error) {
+				ctx.ui.notify(formatError(error), "error");
+			}
+		},
+	});
+}
+
+function tokenizeCommand(input: string): string[] {
+	const tokens: string[] = [];
+	let current = "";
+	let inSingle = false;
+	let inDouble = false;
+	let escaping = false;
+
+	for (const ch of input) {
+		if (escaping) {
+			current += ch;
+			escaping = false;
+			continue;
+		}
+		if (ch === "\\") {
+			escaping = true;
+			continue;
+		}
+		if (ch === "'" && !inDouble) {
+			inSingle = !inSingle;
+			continue;
+		}
+		if (ch === '"' && !inSingle) {
+			inDouble = !inDouble;
+			continue;
+		}
+		if (/\s/.test(ch) && !inSingle && !inDouble) {
+			if (current) {
+				tokens.push(current);
+				current = "";
+			}
+			continue;
+		}
+		current += ch;
+	}
+
+	if (current) {
+		tokens.push(current);
+	}
+
+	return tokens;
+}
+
+function parseCommentArgs(args: string): CommentToolParams | undefined {
+	const tokens = tokenizeCommand(args);
+	const reportId = normalizeReportId(tokens[0]);
+
+	if (reportId === undefined) {
+		return undefined;
+	}
+
+	const options: Partial<CommentToolParams> = { reportId };
+	for (let index = 1; index < tokens.length; index += 1) {
+		const token = tokens[index];
+		if (token === "--internal") {
+			options.internal = true;
+			continue;
+		}
+
+		if (token === "--message") {
+			const message = tokens[index + 1];
+			if (!message) {
+				return undefined;
+			}
+			options.message = message;
+			index += 1;
+			continue;
+		}
+
+		if (token === "--attachment-id") {
+			const value = tokens[index + 1];
+			if (!value) {
+				return undefined;
+			}
+			const attachmentId = Number.parseInt(value, 10);
+			if (!Number.isInteger(attachmentId) || attachmentId < 1) {
+				return undefined;
+			}
+			options.attachmentIds ??= [];
+			options.attachmentIds.push(attachmentId);
+			index += 1;
+			continue;
+		}
+
+		return undefined;
+	}
+
+	if (!options.message) {
+		return undefined;
+	}
+
+	return options as CommentToolParams;
 }
 
 function parseCommandArgs(args: string): FetchReportOptions | undefined {

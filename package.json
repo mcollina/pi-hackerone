@@ -1,6 +1,6 @@
 {
   "name": "pi-hackerone",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Pi package that adds a HackerOne report tool and slash command.",
   "type": "module",
   "keywords": [
@@ -19,7 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@matteo.collina/hackerone": "^0.1.0"
+    "@matteo.collina/hackerone": "^0.2.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

@@ -1,6 +1,6 @@
 # pi-hackerone
 
-A pi package that adds a HackerOne report fetcher powered by [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone).
+A pi package that adds a HackerOne report fetcher and commenter powered by [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone).
 
 ## Install
 
@@ -52,6 +52,21 @@ Parameters:
 - `includeComments` - Fetch comments from the activity API.
 - `program` - Program handle override, useful when fetching comments.
 
+### Tool: `hackerone_comment`
+
+The agent can call this tool to post a comment on a report:
+
+```text
+Post a public comment on HackerOne report 12345 saying the fix is deployed.
+```
+
+Parameters:
+
+- `reportId` - HackerOne report number/id.
+- `message` - The comment message to post.
+- `internal` - Post as an internal (team-only) comment instead of a public one.
+- `attachmentIds` - Optional attachment IDs to attach to the comment.
+
 ### Command: `/hackerone-report`
 
 Fetch a report directly from the pi prompt:
@@ -62,5 +77,17 @@ Fetch a report directly from the pi prompt:
 ```
 
 The command inserts the fetched report into the session as a displayed custom message.
+
+### Command: `/hackerone-comment`
+
+Post a comment directly from the pi prompt:
+
+```text
+/hackerone-comment 12345 --message "A fix has been deployed, can you retest?"
+/hackerone-comment 12345 --message "Internal triage note" --internal
+/hackerone-comment 12345 --message "See attached POC" --attachment-id 42
+```
+
+When a comment is posted, the inserted message is a Markdown summary of the posted comment.
 
 > HackerOne reports can contain sensitive vulnerability details and attachments metadata. Only load this extension in trusted pi sessions.
