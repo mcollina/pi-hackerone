@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	HackerOneClient,
+	ReportState,
+	changeReportState,
 	createComment,
 	filterComments,
 	getReport,
@@ -16,6 +18,7 @@ import { Type } from "typebox";
 
 const TOOL_NAME = "hackerone_report";
 const COMMENT_TOOL_NAME = "hackerone_comment";
+const TRIAGE_TOOL_NAME = "hackerone_triage";
 
 const reportParameters = Type.Object({
 	reportId: Type.Integer({
@@ -62,6 +65,21 @@ interface CommentToolParams {
 	message: string;
 	internal?: boolean;
 	attachmentIds?: number[];
+}
+
+const triageParameters = Type.Object({
+	reportId: Type.Integer({
+		minimum: 1,
+		description: "HackerOne report number/id to move to triaged.",
+	}),
+	message: Type.Optional(Type.String({
+		description: "Optional message to post with the state change.",
+	})),
+});
+
+interface TriageToolParams {
+	reportId: number;
+	message?: string;
 }
 
 interface FetchReportResult {
@@ -197,6 +215,13 @@ async function postComment(options: CommentToolParams, cwd: string): Promise<Act
 	});
 }
 
+async function triageReport(options: TriageToolParams, cwd: string): Promise<Report> {
+	const client = createClient(cwd);
+	return changeReportState(client, options.reportId, ReportState.Triaged, {
+		message: options.message,
+	});
+}
+
 function formatActor(activity: Activity): string {
 	const actor = activity.relationships?.actor?.data;
 	return actor?.attributes?.username ?? actor?.attributes?.handle ?? actor?.id ?? "unknown";
@@ -278,6 +303,10 @@ function formatReportMarkdown(result: FetchReportResult): string {
 	return lines.join("\n");
 }
 
+function formatTriagedReport(report: Report): string {
+	return `# HackerOne report #${report.id}\n\n- State: ${report.attributes.state}`;
+}
+
 function formatError(error: unknown): string {
 	if (isAppError(error)) {
 		const retry = error.retryAfter === undefined ? "" : ` Retry after ${error.retryAfter} seconds.`;
@@ -349,6 +378,35 @@ export default function hackerOneExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: TRIAGE_TOOL_NAME,
+		label: "HackerOne Triage",
+		description: "Move a HackerOne report to triaged using the HackerOne API.",
+		promptSnippet: "Move a HackerOne report to triaged by report number/id",
+		promptGuidelines: [
+			"Use hackerone_triage only when the user explicitly requests moving a specific report to triaged.",
+			"Before using hackerone_triage, ensure the user supplied the report number/id.",
+			"A state change can notify the reporter. Do not call this tool for a request to merely inspect a report.",
+		],
+		parameters: triageParameters,
+		prepareArguments: normalizeToolArguments,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				const report = await triageReport(params, ctx.cwd);
+				return {
+					content: [{ type: "text", text: formatTriagedReport(report) }],
+					details: report,
+				};
+			} catch (error) {
+				return {
+					content: [{ type: "text", text: formatError(error) }],
+					isError: true,
+					details: undefined,
+				};
+			}
+		},
+	});
+
 	pi.registerCommand("hackerone-report", {
 		description: "Fetch a HackerOne report: /hackerone-report <number> [--comments] [--program handle]",
 		handler: async (args, ctx) => {
@@ -366,6 +424,30 @@ export default function hackerOneExtension(pi: ExtensionAPI) {
 					content: formatReportMarkdown(result),
 					display: true,
 					details: result,
+				});
+			} catch (error) {
+				ctx.ui.notify(formatError(error), "error");
+			}
+		},
+	});
+
+	pi.registerCommand("hackerone-triage", {
+		description: "Move a report to triaged: /hackerone-triage <number> [--message \"text\"]",
+		handler: async (args, ctx) => {
+			const parsed = parseTriageArgs(args);
+			if (!parsed) {
+				ctx.ui.notify("Usage: /hackerone-triage <number> [--message \"text\"]", "warning");
+				return;
+			}
+
+			try {
+				ctx.ui.notify(`Triaging HackerOne report #${parsed.reportId}...`, "info");
+				const report = await triageReport(parsed, ctx.cwd);
+				pi.sendMessage({
+					customType: "hackerone-triage",
+					content: formatTriagedReport(report),
+					display: true,
+					details: report,
 				});
 			} catch (error) {
 				ctx.ui.notify(formatError(error), "error");
@@ -441,6 +523,17 @@ function tokenizeCommand(input: string): string[] {
 	}
 
 	return tokens;
+}
+
+function parseTriageArgs(args: string): TriageToolParams | undefined {
+	const tokens = tokenizeCommand(args);
+	const reportId = normalizeReportId(tokens[0]);
+	if (reportId === undefined) return undefined;
+	if (tokens.length === 1) return { reportId };
+	if (tokens.length === 3 && tokens[1] === "--message" && tokens[2]) {
+		return { reportId, message: tokens[2] };
+	}
+	return undefined;
 }
 
 function parseCommentArgs(args: string): CommentToolParams | undefined {
