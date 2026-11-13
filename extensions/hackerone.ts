@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	HackerOneClient,
+	ReportState,
+	changeReportState,
 	createComment,
 	filterComments,
 	getReport,
@@ -215,14 +217,8 @@ async function postComment(options: CommentToolParams, cwd: string): Promise<Act
 
 async function triageReport(options: TriageToolParams, cwd: string): Promise<Report> {
 	const client = createClient(cwd);
-	return client.request<Report>("POST", `/reports/${options.reportId}/state_changes`, undefined, {
-		data: {
-			type: "state-change",
-			attributes: {
-				state: "triaged",
-				...(options.message === undefined ? {} : { message: options.message }),
-			},
-		},
+	return changeReportState(client, options.reportId, ReportState.Triaged, {
+		message: options.message,
 	});
 }
 
