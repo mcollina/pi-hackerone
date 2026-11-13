@@ -16,6 +16,7 @@
     "README.md"
   ],
   "scripts": {
+    "test": "node --test 'test/*.test.mjs'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -29,7 +30,8 @@
     "@earendil-works/pi-coding-agent": "*",
     "@types/node": "^24.0.0",
     "typebox": "*",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "undici": "^7.30.2"
   },
   "pi": {
     "extensions": [

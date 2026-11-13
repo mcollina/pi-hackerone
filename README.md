@@ -1,6 +1,6 @@
 # pi-hackerone
 
-A pi package that adds a HackerOne report fetcher and commenter powered by [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone).
+A pi package that adds HackerOne report fetching, commenting, and triaging powered by [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone).
 
 ## Install
 
@@ -67,6 +67,21 @@ Parameters:
 - `internal` - Post as an internal (team-only) comment instead of a public one.
 - `attachmentIds` - Optional attachment IDs to attach to the comment.
 
+### Tool: `hackerone_triage`
+
+Move a specific report to triaged when explicitly requested:
+
+```text
+Move HackerOne report 12345 to triaged.
+```
+
+Parameters:
+
+- `reportId` - HackerOne report number/id.
+- `message` - Optional message to post with the state change.
+
+This action requires the API user's Report Management permission and may notify the reporter.
+
 ### Command: `/hackerone-report`
 
 Fetch a report directly from the pi prompt:
@@ -77,6 +92,15 @@ Fetch a report directly from the pi prompt:
 ```
 
 The command inserts the fetched report into the session as a displayed custom message.
+
+### Command: `/hackerone-triage`
+
+```text
+/hackerone-triage 12345
+/hackerone-triage 12345 --message "Confirmed"
+```
+
+The command inserts the updated report state into the session.
 
 ### Command: `/hackerone-comment`
 
