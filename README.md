@@ -78,7 +78,7 @@ Move HackerOne report 12345 to triaged.
 Parameters:
 
 - `reportId` - HackerOne report number/id.
-- `message` - Optional message to post with the state change.
+- `message` - Optional public message visible to the reporter; use `hackerone_comment` with `internal: true` for team-only notes.
 
 This action requires the API user's Report Management permission and may notify the reporter.
 

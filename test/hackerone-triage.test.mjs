@@ -48,6 +48,8 @@ describe('HackerOne triage', () => {
   });
 
   it('posts the state-change payload through the tool', async () => {
+    assert.match(tools.get('hackerone_triage').parameters.properties.message.description,
+                 /visible to the reporter/);
     mockAgent.get('https://api.hackerone.com').intercept({
       method: 'POST',
       path: '/v1/reports/12345/state_changes',

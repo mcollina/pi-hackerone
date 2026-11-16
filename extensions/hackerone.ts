@@ -73,7 +73,7 @@ const triageParameters = Type.Object({
 		description: "HackerOne report number/id to move to triaged.",
 	}),
 	message: Type.Optional(Type.String({
-		description: "Optional message to post with the state change.",
+		description: "Optional public message visible to the reporter when the state changes. Do not include team-only notes.",
 	})),
 });
 
@@ -386,7 +386,8 @@ export default function hackerOneExtension(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Use hackerone_triage only when the user explicitly requests moving a specific report to triaged.",
 			"Before using hackerone_triage, ensure the user supplied the report number/id.",
-			"A state change can notify the reporter. Do not call this tool for a request to merely inspect a report.",
+			"A state change can notify the reporter; its optional message is visible to the reporter. Use hackerone_comment with internal: true for team-only notes.",
+			"Do not call this tool for a request to merely inspect a report.",
 		],
 		parameters: triageParameters,
 		prepareArguments: normalizeToolArguments,
