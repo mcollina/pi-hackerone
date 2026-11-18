@@ -1,6 +1,6 @@
 # pi-hackerone
 
-A pi package that adds HackerOne report fetching, commenting, and triaging powered by [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone).
+A pi package that adds HackerOne report fetching, commenting, and state changes (triage, close, reopen) powered by [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone).
 
 ## Install
 
@@ -67,20 +67,41 @@ Parameters:
 - `internal` - Post as an internal (team-only) comment instead of a public one.
 - `attachmentIds` - Optional attachment IDs to attach to the comment.
 
-### Tool: `hackerone_triage`
+### Tool: `hackerone_change_state`
 
-Move a specific report to triaged when explicitly requested:
+Change a specific report's state when explicitly requested: triage it, ask the reporter for more information, close it, or reopen it.
 
 ```text
 Move HackerOne report 12345 to triaged.
+Close HackerOne report 12345 as informative, telling the reporter this is an accepted risk.
+Mark HackerOne report 12345 as a duplicate of 11111.
 ```
 
 Parameters:
 
 - `reportId` - HackerOne report number/id.
-- `message` - Optional public message visible to the reporter; use `hackerone_comment` with `internal: true` for team-only notes.
+- `state` - The state to move the report to. See [Report states](#report-states).
+- `message` - Message posted with the state change. It is visible to the reporter; use `hackerone_comment` with `internal: true` for team-only notes. Required for `needs-more-info`, `informative`, and `duplicate`.
+- `originalReportId` - Only for `duplicate`: the ID of the original report.
+- `attachmentIds` - Optional attachment IDs to include with the message.
 
 This action requires the API user's Report Management permission and may notify the reporter.
+
+#### Report states
+
+| State | Status | Message required | Definition |
+| --- | --- | --- | --- |
+| `new` | Open | No | The report is pending validation. Moving a closed report here reopens it for a fresh review. |
+| `pending-program-review` | Open | No | HackerOne triage has initially validated the report, and it awaits review and severity validation by the program team. Only applies to programs that use HackerOne's triage services. |
+| `triaged` | Open | No | The report is validated and escalated for remediation. The vulnerability is treated as live and reproducible until it is fixed. |
+| `needs-more-info` | Open | Yes | The reporter must provide more information to reproduce the issue or demonstrate impact. HackerOne closes the report as informative, with no reputation change, after 30 days without a reply. |
+| `resolved` | Closed | No | The vulnerability is fixed and no longer reproducible; no further action is needed. The reporter gains 7 reputation and is credited in the program's hall of fame. |
+| `not-applicable` | Closed | No | The report has no valid, reproducible issue and no demonstrated security impact; explain why so the reporter can improve. The reporter loses 5 reputation and their signal drops. |
+| `informative` | Closed | Yes | The report contains valid information that needs no action, such as an out-of-scope finding, a known issue, or an accepted risk. The reporter's reputation does not change. |
+| `duplicate` | Closed | Yes | The issue was already reported or is otherwise known, or one fix resolves several reports. The reporter's reputation change depends on how the original report is closed. |
+| `spam` | Closed | No | The report does not describe a legitimate security vulnerability, or it is incomprehensible, abusive, harassing, or selling a product or service. The reporter loses 10 reputation. |
+
+Closed reports can only move back to `new` or `triaged`. `retesting` is not offered because HackerOne sets it through its separate retest flow. The states, definitions, and message rules come from [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone), which follows HackerOne's [report states](https://docs.hackerone.com/en/articles/8475030-report-states) and [change state API](https://api.hackerone.com/customer-resources/#reports-change-state) documentation.
 
 ### Command: `/hackerone-report`
 
@@ -93,14 +114,19 @@ Fetch a report directly from the pi prompt:
 
 The command inserts the fetched report into the session as a displayed custom message.
 
-### Command: `/hackerone-triage`
+### Command: `/hackerone-state`
+
+Change a report's state directly from the pi prompt. After the report number, press Tab to pick a state; each suggestion shows the state's definition.
 
 ```text
-/hackerone-triage 12345
-/hackerone-triage 12345 --message "Confirmed"
+/hackerone-state 12345 triaged
+/hackerone-state 12345 needs-more-info --message "Can you share the request that triggers the crash?"
+/hackerone-state 12345 informative --message "This is an accepted risk."
+/hackerone-state 12345 duplicate --message "Already reported" --original-report-id 11111
+/hackerone-state 12345 not-applicable --message "Not reproducible" --attachment-id 42
 ```
 
-The command inserts the updated report state into the session.
+Use any state from [Report states](#report-states). The command inserts the updated report state into the session.
 
 ### Command: `/hackerone-comment`
 

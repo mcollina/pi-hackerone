@@ -4,21 +4,35 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	HackerOneClient,
-	ReportState,
 	changeReportState,
+	changeableReportStates,
 	createComment,
 	filterComments,
 	getReport,
 	isAppError,
 	listAllActivities,
+	reportStates,
+	validateStateChange,
 	type Activity,
+	type ChangeableReportState,
 	type Report,
 } from "@matteo.collina/hackerone";
 import { Type } from "typebox";
 
 const TOOL_NAME = "hackerone_report";
 const COMMENT_TOOL_NAME = "hackerone_comment";
-const TRIAGE_TOOL_NAME = "hackerone_triage";
+const STATE_TOOL_NAME = "hackerone_change_state";
+
+// States and their definitions come from the client library, so the tool,
+// the command, and the README stay in step with it.
+const STATE_INFO = reportStates.filter((info) => info.changeable).map(({ state, status, requiresMessage, definition }) => {
+	const summary = `${status === "open" ? "Open" : "Closed"}${requiresMessage ? ", message required" : ""}. ${definition}`;
+	return { state, requiresMessage, summary };
+});
+const STATE_DEFINITIONS = STATE_INFO.map(({ state, summary }) => `- ${state}: ${summary}`).join("\n");
+const MESSAGE_STATES = STATE_INFO.filter((info) => info.requiresMessage).map((info) => info.state).join(", ");
+const STATE_TRANSITION_RULE = "Closed reports (resolved, informative, duplicate, not-applicable, spam) can only move back to new or triaged.";
+const STATE_COMMAND_USAGE = "/hackerone-state <number> <state> [--message \"text\"] [--original-report-id id] [--attachment-id id]";
 
 const reportParameters = Type.Object({
 	reportId: Type.Integer({
@@ -67,19 +81,37 @@ interface CommentToolParams {
 	attachmentIds?: number[];
 }
 
-const triageParameters = Type.Object({
+const stateParameters = Type.Object({
 	reportId: Type.Integer({
 		minimum: 1,
-		description: "HackerOne report number/id to move to triaged.",
+		description: "HackerOne report number/id whose state should change.",
+	}),
+	// A plain string enum (not anyOf/const) so every model provider accepts it.
+	state: Type.Unsafe<ChangeableReportState>({
+		type: "string",
+		enum: [...changeableReportStates],
+		description: `The state to move the report to. ${STATE_TRANSITION_RULE} One of:\n${STATE_DEFINITIONS}`,
 	}),
 	message: Type.Optional(Type.String({
-		description: "Optional public message visible to the reporter when the state changes. Do not include team-only notes.",
+		description: `Message posted on the report with the state change. It is visible to the reporter, so never include team-only notes. Required for ${MESSAGE_STATES}.`,
+	})),
+	originalReportId: Type.Optional(Type.Integer({
+		minimum: 1,
+		description: "Only for the duplicate state: the ID of the original report this one duplicates.",
+	})),
+	attachmentIds: Type.Optional(Type.Array(Type.Integer({
+		minimum: 1,
+	}), {
+		description: "Optional attachment IDs to include with the state change message.",
 	})),
 });
 
-interface TriageToolParams {
+interface StateToolParams {
 	reportId: number;
+	state: ChangeableReportState;
 	message?: string;
+	originalReportId?: number;
+	attachmentIds?: number[];
 }
 
 interface FetchReportResult {
@@ -148,7 +180,7 @@ function createClient(cwd: string): HackerOneClient {
 	return new HackerOneClient(readCredentials(cwd));
 }
 
-function normalizeReportId(value: unknown): number | undefined {
+function parsePositiveInteger(value: unknown): number | undefined {
 	if (typeof value === "number" && Number.isInteger(value) && value > 0) {
 		return value;
 	}
@@ -160,22 +192,41 @@ function normalizeReportId(value: unknown): number | undefined {
 	return undefined;
 }
 
+// Accepts case and separator variants such as "Not_Applicable" or "needs more info".
+function normalizeState(value: unknown): ChangeableReportState | undefined {
+	if (typeof value !== "string") {
+		return undefined;
+	}
+
+	const candidate = value.trim().toLowerCase().replace(/[\s_]+/g, "-");
+	return changeableReportStates.find((state) => state === candidate);
+}
+
 function normalizeToolArguments<T extends object>(args: unknown): T {
 	if (!args || typeof args !== "object") {
 		return args as T;
 	}
 
 	const record = args as Record<string, unknown>;
-	const reportId = normalizeReportId(record.reportId)
-		?? normalizeReportId(record.reportNumber)
-		?? normalizeReportId(record.number)
-		?? normalizeReportId(record.id);
+	const normalized: Record<string, unknown> = { ...record };
+	let changed = false;
 
-	if (reportId === undefined || record.reportId === reportId) {
-		return args as T;
+	const reportId = parsePositiveInteger(record.reportId)
+		?? parsePositiveInteger(record.reportNumber)
+		?? parsePositiveInteger(record.number)
+		?? parsePositiveInteger(record.id);
+	if (reportId !== undefined && record.reportId !== reportId) {
+		normalized.reportId = reportId;
+		changed = true;
 	}
 
-	return { ...record, reportId } as T;
+	const state = normalizeState(record.state);
+	if (state !== undefined && record.state !== state) {
+		normalized.state = state;
+		changed = true;
+	}
+
+	return (changed ? normalized : args) as T;
 }
 
 function getProgramHandle(report: Report, fallback?: string): string | undefined {
@@ -215,10 +266,12 @@ async function postComment(options: CommentToolParams, cwd: string): Promise<Act
 	});
 }
 
-async function triageReport(options: TriageToolParams, cwd: string): Promise<Report> {
+async function changeState(options: StateToolParams, cwd: string): Promise<Report> {
 	const client = createClient(cwd);
-	return changeReportState(client, options.reportId, ReportState.Triaged, {
+	return changeReportState(client, options.reportId, options.state, {
 		message: options.message,
+		originalReportId: options.originalReportId,
+		attachmentIds: options.attachmentIds,
 	});
 }
 
@@ -303,11 +356,16 @@ function formatReportMarkdown(result: FetchReportResult): string {
 	return lines.join("\n");
 }
 
-function formatTriagedReport(report: Report): string {
+function formatStateChange(report: Report): string {
 	return `# HackerOne report #${report.id}\n\n- State: ${report.attributes.state}`;
 }
 
 function formatError(error: unknown): string {
+	// Rejected by the client library before any request was sent.
+	if (isAppError(error) && error.code === "VALIDATION_ERROR") {
+		return error.message;
+	}
+
 	if (isAppError(error)) {
 		const retry = error.retryAfter === undefined ? "" : ` Retry after ${error.retryAfter} seconds.`;
 		return `HackerOne API error (${error.code}, HTTP ${error.statusCode}): ${error.message}.${retry}`;
@@ -379,23 +437,25 @@ export default function hackerOneExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: TRIAGE_TOOL_NAME,
-		label: "HackerOne Triage",
-		description: "Move a HackerOne report to triaged using the HackerOne API.",
-		promptSnippet: "Move a HackerOne report to triaged by report number/id",
+		name: STATE_TOOL_NAME,
+		label: "HackerOne Change State",
+		description: `Change the state of a HackerOne report: triage it, ask the reporter for more information, close it, or reopen it. The optional message is posted on the report and is visible to the reporter. ${STATE_TRANSITION_RULE}\n\nStates:\n${STATE_DEFINITIONS}`,
+		promptSnippet: `Change a HackerOne report's state (${changeableReportStates.join(", ")}) by report number/id`,
 		promptGuidelines: [
-			"Use hackerone_triage only when the user explicitly requests moving a specific report to triaged.",
-			"Before using hackerone_triage, ensure the user supplied the report number/id.",
-			"A state change can notify the reporter; its optional message is visible to the reporter. Use hackerone_comment with internal: true for team-only notes.",
+			"Use hackerone_change_state only when the user explicitly asks to change a specific report's state, such as triaging it, requesting more information, closing it as resolved, informative, duplicate, not-applicable, or spam, or reopening it.",
+			"Before using hackerone_change_state, ensure the user supplied the report number/id and which state to move it to. If the target state is ambiguous (for example, \"close it\"), ask which closed state they mean.",
+			"A state change can notify the reporter, and its message is visible to the reporter. Use hackerone_comment with internal: true for team-only notes.",
+			`${MESSAGE_STATES} require a message. For duplicate, set originalReportId when the user names the original report.`,
+			"Closing as not-applicable or spam lowers the reporter's reputation, and resolved raises it; informative does not change it.",
 			"Do not call this tool for a request to merely inspect a report.",
 		],
-		parameters: triageParameters,
+		parameters: stateParameters,
 		prepareArguments: normalizeToolArguments,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const report = await triageReport(params, ctx.cwd);
+				const report = await changeState(params, ctx.cwd);
 				return {
-					content: [{ type: "text", text: formatTriagedReport(report) }],
+					content: [{ type: "text", text: formatStateChange(report) }],
 					details: report,
 				};
 			} catch (error) {
@@ -432,21 +492,42 @@ export default function hackerOneExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("hackerone-triage", {
-		description: "Move a report to triaged: /hackerone-triage <number> [--message \"text\"]",
+	pi.registerCommand("hackerone-state", {
+		description: `Change a report's state: ${STATE_COMMAND_USAGE}. ${STATE_TRANSITION_RULE} States:\n${STATE_DEFINITIONS}`,
+		// Completes the state after the report number, showing each state's definition.
+		getArgumentCompletions: (prefix: string) => {
+			const match = /^(\s*\d+\s+)(\S*)$/.exec(prefix);
+			if (!match) {
+				return null;
+			}
+
+			const [, head, partial] = match;
+			const typed = partial.toLowerCase();
+			const items = STATE_INFO
+				.filter(({ state }) => state.startsWith(typed))
+				.map(({ state, summary }) => ({ value: `${head}${state} `, label: state, description: summary }));
+			return items.length > 0 ? items : null;
+		},
 		handler: async (args, ctx) => {
-			const parsed = parseTriageArgs(args);
+			const parsed = parseStateArgs(args);
 			if (!parsed) {
-				ctx.ui.notify("Usage: /hackerone-triage <number> [--message \"text\"]", "warning");
+				ctx.ui.notify(`Usage: ${STATE_COMMAND_USAGE}\nStates: ${changeableReportStates.join(", ")}`, "warning");
 				return;
 			}
 
 			try {
-				ctx.ui.notify(`Triaging HackerOne report #${parsed.reportId}...`, "info");
-				const report = await triageReport(parsed, ctx.cwd);
+				validateStateChange(parsed.state, parsed);
+			} catch (error) {
+				ctx.ui.notify(formatError(error), "warning");
+				return;
+			}
+
+			try {
+				ctx.ui.notify(`Moving HackerOne report #${parsed.reportId} to ${parsed.state}...`, "info");
+				const report = await changeState(parsed, ctx.cwd);
 				pi.sendMessage({
-					customType: "hackerone-triage",
-					content: formatTriagedReport(report),
+					customType: "hackerone-state",
+					content: formatStateChange(report),
 					display: true,
 					details: report,
 				});
@@ -526,20 +607,59 @@ function tokenizeCommand(input: string): string[] {
 	return tokens;
 }
 
-function parseTriageArgs(args: string): TriageToolParams | undefined {
+function parseStateArgs(args: string): StateToolParams | undefined {
 	const tokens = tokenizeCommand(args);
-	const reportId = normalizeReportId(tokens[0]);
-	if (reportId === undefined) return undefined;
-	if (tokens.length === 1) return { reportId };
-	if (tokens.length === 3 && tokens[1] === "--message" && tokens[2]) {
-		return { reportId, message: tokens[2] };
+	const reportId = parsePositiveInteger(tokens[0]);
+	const state = normalizeState(tokens[1]);
+
+	if (reportId === undefined || state === undefined) {
+		return undefined;
 	}
-	return undefined;
+
+	const options: StateToolParams = { reportId, state };
+	for (let index = 2; index < tokens.length; index += 1) {
+		const token = tokens[index];
+		const value = tokens[index + 1];
+
+		if (token === "--message") {
+			if (!value) {
+				return undefined;
+			}
+			options.message = value;
+			index += 1;
+			continue;
+		}
+
+		if (token === "--original-report-id") {
+			const originalReportId = parsePositiveInteger(value);
+			if (originalReportId === undefined) {
+				return undefined;
+			}
+			options.originalReportId = originalReportId;
+			index += 1;
+			continue;
+		}
+
+		if (token === "--attachment-id") {
+			const attachmentId = parsePositiveInteger(value);
+			if (attachmentId === undefined) {
+				return undefined;
+			}
+			options.attachmentIds ??= [];
+			options.attachmentIds.push(attachmentId);
+			index += 1;
+			continue;
+		}
+
+		return undefined;
+	}
+
+	return options;
 }
 
 function parseCommentArgs(args: string): CommentToolParams | undefined {
 	const tokens = tokenizeCommand(args);
-	const reportId = normalizeReportId(tokens[0]);
+	const reportId = parsePositiveInteger(tokens[0]);
 
 	if (reportId === undefined) {
 		return undefined;
@@ -590,7 +710,7 @@ function parseCommentArgs(args: string): CommentToolParams | undefined {
 
 function parseCommandArgs(args: string): FetchReportOptions | undefined {
 	const tokens = args.trim().split(/\s+/).filter(Boolean);
-	const reportId = normalizeReportId(tokens[0]);
+	const reportId = parsePositiveInteger(tokens[0]);
 
 	if (reportId === undefined) {
 		return undefined;
