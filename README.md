@@ -1,6 +1,6 @@
 # pi-hackerone
 
-A pi package that adds HackerOne report fetching, commenting, and state changes (triage, close, reopen) powered by [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone).
+A pi package that adds HackerOne report fetching, commenting, state changes (triage, close, reopen), and attachment downloads powered by [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone).
 
 ## Install
 
@@ -51,6 +51,8 @@ Parameters:
 - `reportId` - HackerOne report number/id.
 - `includeComments` - Fetch comments from the activity API.
 - `program` - Program handle override, useful when fetching comments.
+
+The report lists its attachments with their IDs, which you can pass to `hackerone_download_attachments`.
 
 ### Tool: `hackerone_comment`
 
@@ -103,6 +105,27 @@ This action requires the API user's Report Management permission and may notify 
 
 Closed reports can only move back to `new` or `triaged`. `retesting` is not offered because HackerOne sets it through its separate retest flow. The states, definitions, and message rules come from [`@matteo.collina/hackerone`](https://www.npmjs.com/package/@matteo.collina/hackerone), which follows HackerOne's [report states](https://docs.hackerone.com/en/articles/8475030-report-states) and [change state API](https://api.hackerone.com/customer-resources/#reports-change-state) documentation.
 
+### Tool: `hackerone_download_attachments`
+
+Download a report's attachments, including those posted in comments, so the agent can look at them:
+
+```text
+Download the attachments of HackerOne report 12345 and check what the proof of concept does.
+Download only attachment 4242 from HackerOne report 12345.
+```
+
+Parameters:
+
+- `reportId` - HackerOne report number/id.
+- `attachmentIds` - Only download these attachment IDs. Downloads every attachment when omitted.
+- `outputDir` - Folder to save the files in, relative to the working directory. Defaults to `.hackerone/<reportId>/attachments`.
+- `program` - Program handle override, used to find attachments posted in comments.
+- `maxBytes` - Skip attachments larger than this many bytes. Defaults to 100 MiB.
+
+Each file is saved as `<attachment id>-<file name>`, with folder parts and unsafe characters removed from the reporter's file name. The first download into the default folder creates `.hackerone/.gitignore` so that downloaded reports are not committed by accident. If one download fails, for example because a file is over `maxBytes`, the others still complete and the result lists the failure.
+
+Attachments come from the reporter and may be malicious. The tool tells the agent to treat them as untrusted data and not to run them or open them with other programs unless you ask.
+
 ### Command: `/hackerone-report`
 
 Fetch a report directly from the pi prompt:
@@ -140,4 +163,16 @@ Post a comment directly from the pi prompt:
 
 When a comment is posted, the inserted message is a Markdown summary of the posted comment.
 
-> HackerOne reports can contain sensitive vulnerability details and attachments metadata. Only load this extension in trusted pi sessions.
+### Command: `/hackerone-attachments`
+
+Download a report's attachments directly from the pi prompt:
+
+```text
+/hackerone-attachments 12345
+/hackerone-attachments 12345 --attachment-id 4242 --attachment-id 4243
+/hackerone-attachments 12345 --output-dir "./evidence/12345" --max-bytes 500000000
+```
+
+The command inserts the list of saved files into the session. Files are named and stored as described for [`hackerone_download_attachments`](#tool-hackerone_download_attachments).
+
+> HackerOne reports and their attachments can contain sensitive vulnerability details. Only load this extension in trusted pi sessions, and keep downloaded attachments out of version control.
